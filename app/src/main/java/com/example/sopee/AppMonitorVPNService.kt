@@ -268,68 +268,66 @@ class AppMonitorVPNService : VpnService() {
                     Thread.sleep(10)
                     continue
                 }
-               
+                
                 val destKey = "${task.destIp}:${task.destPort}"
                 debugLogger.log("PACKET_TASK", "Processing task: $destKey, Priority: ${task.priority}, SrcPort: ${task.srcPort}, Size: ${task.packet.size} bytes")
-
-                    // Try to get existing socket from pool
-                    var socket = connectionPool.getSocket(task.destIp, task.destPort)
-                    
-                    if (socket == null) {
-                        debugLogger.log("SOCKET", "No pooled socket available for $destKey, creating new")
-                    } else if (socket.isClosed || !socket.isConnected) {
-                        debugLogger.log("SOCKET", "Pooled socket for $destKey is closed/not connected, creating new")
-                        socket = null
-                    } else {
-                        debugLogger.log("SOCKET", "Reusing pooled socket for $destKey")
-                    }
-                    
-                    if (socket == null) {
-                        // Create new socket
-                        socket = try {
-                            debugLogger.log("SOCKET_CONNECT", "Attempting to connect to $destKey")
-                            Socket(task.destIp, task.destPort).apply {
-                                tcpNoDelay = true
-                                soTimeout = 15000
-                            }
-                        } catch (e: Exception) {
-                            debugLogger.log("SOCKET_ERROR", "Failed to connect to $destKey: ${e.message}")
-                            null
+                
+                // Try to get existing socket from pool
+                var socket = connectionPool.getSocket(task.destIp, task.destPort)
+                
+                if (socket == null) {
+                    debugLogger.log("SOCKET", "No pooled socket available for $destKey, creating new")
+                } else if (socket.isClosed || !socket.isConnected) {
+                    debugLogger.log("SOCKET", "Pooled socket for $destKey is closed/not connected, creating new")
+                    socket = null
+                } else {
+                    debugLogger.log("SOCKET", "Reusing pooled socket for $destKey")
+                }
+                
+                if (socket == null) {
+                    // Create new socket
+                    socket = try {
+                        debugLogger.log("SOCKET_CONNECT", "Attempting to connect to $destKey")
+                        Socket(task.destIp, task.destPort).apply {
+                            tcpNoDelay = true
+                            soTimeout = 15000
                         }
-                        
-                        if (socket != null) {
-                            debugLogger.log("SOCKET_CONNECT", "Successfully connected to $destKey")
-                        }
+                    } catch (e: Exception) {
+                        debugLogger.log("SOCKET_ERROR", "Failed to connect to $destKey: ${e.message}")
+                        null
                     }
                     
                     if (socket != null) {
-                        // Track active connection
-                        tcpConnections[task.srcPort] = socket
-                        
-                        // Send data
-                        try {
-                            debugLogger.log("SOCKET_SEND", "Sending ${task.packet.size} bytes to $destKey")
-                            socket.getOutputStream().write(task.packet)
-                            socket.getOutputStream().flush()
-                            debugLogger.log("SOCKET_SEND", "Successfully sent data to $destKey")
-                            
-                            // Start response handler if not already
-                            if (!tcpConnections.containsKey(task.srcPort)) {
-                                debugLogger.log("RESPONSE_HANDLER", "Starting response handler for srcPort ${task.srcPort}")
-                                startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
-                            }
-                        } catch (e: Exception) {
-                            debugLogger.log("SOCKET_SEND_ERROR", "Error sending to $destKey: ${e.message}")
-                            socket.close()
-                            tcpConnections.remove(task.srcPort)
-                        }
-                    } else {
-                        debugLogger.log("PACKET_TASK", "No socket available for $destKey, packet dropped")
+                        debugLogger.log("SOCKET_CONNECT", "Successfully connected to $destKey")
                     }
-                } catch (e: Exception) {
-                    debugLogger.log("PACKET_PROCESSOR_ERROR", "Processor error: ${e.message}")
-                    Thread.sleep(10)
                 }
+                
+                if (socket != null) {
+                    // Track active connection
+                    tcpConnections[task.srcPort] = socket
+                    
+                    // Send data
+                    try {
+                        debugLogger.log("SOCKET_SEND", "Sending ${task.packet.size} bytes to $destKey")
+                        socket.getOutputStream().write(task.packet)
+                        socket.getOutputStream().flush()
+                        debugLogger.log("SOCKET_SEND", "Successfully sent data to $destKey")
+                        
+                        // Start response handler if not already
+                        if (!tcpConnections.containsKey(task.srcPort)) {
+                            debugLogger.log("RESPONSE_HANDLER", "Starting response handler for srcPort ${task.srcPort}")
+                            startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
+                        }
+                    } catch (e: Exception) {
+                        debugLogger.log("SOCKET_SEND_ERROR", "Error sending to $destKey: ${e.message}")
+                        socket.close()
+                        tcpConnections.remove(task.srcPort)
+                    }
+                } else {
+                    debugLogger.log("PACKET_TASK", "No socket available for $destKey, packet dropped")
+                }
+                
+                Thread.sleep(10) // Small delay to prevent CPU spinning
             }
             debugLogger.log("PACKET_PROCESSOR", "Packet processor thread ended")
         }
