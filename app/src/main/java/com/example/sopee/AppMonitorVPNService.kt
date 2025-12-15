@@ -336,7 +336,7 @@ class AppMonitorVPNService : VpnService() {
             
             // Only process packets with actual data or PUSH flag
             //if (payload.isNotEmpty() || (tcpFlags and 0x08) != 0) { // PSH flag
-            if (payload.isNotEmpty() || (tcpFlags and 0x02) != 0) // SYN juga diproses
+            if (payload.isNotEmpty() || (tcpFlags and 0x02) != 0) { // SYN juga diproses
                 val priority = EndpointConfig.getPriorityForHost(destIp)
                 val domainType = when (priority) {
                     3 -> "CRITICAL"
