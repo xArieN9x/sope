@@ -55,7 +55,7 @@ class ConnectionPool {
                 oldest?.let {
                     try {
                         it.socket.close()
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) { }
                     sockets.remove(it)
                     sockets.add(PooledSocket(socket, System.currentTimeMillis(), isIdle = true))
                 }
@@ -72,18 +72,13 @@ class ConnectionPool {
                 while (iterator.hasNext()) {
                     val pooled = iterator.next()
                     
-                    val keepAlive = when {
-                        EndpointConfig.CRITICAL_ENDPOINTS.any { key.contains(it) } -> 
-                            EndpointConfig.CRITICAL_KEEP_ALIVE
-                        EndpointConfig.BACKGROUND_ENDPOINTS.any { key.contains(it) } -> 
-                            EndpointConfig.BACKGROUND_KEEP_ALIVE
-                        else -> EndpointConfig.NORMAL_KEEP_ALIVE
-                    }
+                    // GUNA FUNGSI BARU DARI EndpointConfig
+                    val keepAlive = EndpointConfig.getKeepAliveForHost(key)
                     
                     if (now - pooled.lastUsed > keepAlive || pooled.socket.isClosed) {
                         try {
                             pooled.socket.close()
-                        } catch (_: Exception) {}
+                        } catch (_: Exception) { }
                         iterator.remove()
                     }
                 }
@@ -102,7 +97,7 @@ class ConnectionPool {
                 sockets.forEach { 
                     try { 
                         it.socket.close() 
-                    } catch (_: Exception) {} 
+                    } catch (_: Exception) { } 
                 }
             }
             socketPool.clear()
