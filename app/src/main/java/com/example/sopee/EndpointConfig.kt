@@ -1,4 +1,4 @@
-package com.example.allinoneflushapp
+package com.example.sopee
 
 object EndpointConfig {
     // Critical endpoints - HIGH priority
