@@ -57,7 +57,7 @@ class AppMonitorVPNService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         instance = this
         createNotificationChannel()
-        startForeground(NOTIF_ID, createNotification("Panda Monitor running", connected = false))
+        startForeground(NOTIF_ID, createNotification("Shopee Monitor running", connected = false))
         establishVPN("8.8.8.8")
         
         // ✅ Start cleanup scheduler
@@ -74,7 +74,7 @@ class AppMonitorVPNService : VpnService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
-            val channel = NotificationChannel(CHANNEL_ID, "Panda Monitor", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(CHANNEL_ID, "Shopee Monitor", NotificationManager.IMPORTANCE_LOW)
             nm?.createNotificationChannel(channel)
         }
     }
@@ -87,7 +87,7 @@ class AppMonitorVPNService : VpnService() {
         )
         val smallIcon = if (connected) android.R.drawable.presence_online else android.R.drawable.presence_busy
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Panda Monitor")
+            .setContentTitle("Shopee Monitor")
             .setContentText(text)
             .setSmallIcon(smallIcon)
             .setContentIntent(pi)
@@ -105,7 +105,7 @@ class AppMonitorVPNService : VpnService() {
         } catch (_: Exception) {}
 
         val builder = Builder()
-        builder.setSession("PandaMonitor")
+        builder.setSession("ShopeeMonitor")
             .addAddress("10.0.0.2", 32)
             .addRoute("0.0.0.0", 0)
             .addAllowedApplication("com.logistics.rider.foodpanda")
