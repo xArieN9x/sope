@@ -1,4 +1,4 @@
-package com.example.allinoneflushapp
+package com.example.sopee
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
