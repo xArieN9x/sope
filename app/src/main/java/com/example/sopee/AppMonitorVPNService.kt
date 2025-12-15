@@ -477,6 +477,34 @@ class AppMonitorVPNService : VpnService() {
         }
     }
 
+    private fun handleUdpPacket(packet: ByteArray) {
+        try {
+            val ihl = (packet[0].toInt() and 0x0F) * 4
+            if (packet.size < ihl + 8) return
+            
+            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
+            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
+            
+            // DNS is typically port 53
+            if (destPort == 53 || srcPort == 53) {
+                val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
+                
+                debugLogger.log("DNS", "DNS query to $destIp:$destPort")
+                
+                // Forward DNS through normal socket (bypass VPN)
+                forwardDnsQuery(packet, ihl + 8)
+            }
+        } catch (e: Exception) {
+            debugLogger.log("DNS_ERROR", "Error: ${e.message}")
+        }
+    }
+    
+    // In handleOutboundPacket, add UDP case:
+    if (protocol == 17) { // UDP
+        handleUdpPacket(packet)
+        return
+    }
+
     private fun buildTcpPacket(srcIp: String, srcPort: Int, destIp: String, destPort: Int, payload: ByteArray): ByteArray {
         debugLogger.log("PACKET_BUILD", "Building TCP packet: $srcIp:$srcPort -> $destIp:$destPort, Payload: ${payload.size} bytes")
         
