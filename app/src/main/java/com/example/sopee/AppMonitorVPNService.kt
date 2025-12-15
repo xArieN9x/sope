@@ -21,6 +21,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.io.FileInputStream
 import java.net.Socket
+import kotlin.math.min
 
 class AppMonitorVPNService : VpnService() {
     companion object {
@@ -90,45 +91,6 @@ class AppMonitorVPNService : VpnService() {
                 return logFile.absolutePath
             } catch (e: Exception) {
                 android.util.Log.e("CB_DEBUG", "Failed to save log file: ${e.message}")
-                return ""
-            }
-        }
-        
-        // NEW FUNCTION: Capture FULL system logcat
-        fun captureLogcatToFile(context: android.content.Context): String {
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val filename = "CedokBooster_FULL_Logcat_${timestamp}.txt"
-            
-            // Save to public Downloads folder
-            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_DOWNLOADS
-            )
-            
-            val logcatFile = File(downloadsDir, filename)
-            
-            try {
-                // Run logcat command
-                val process = Runtime.getRuntime().exec("logcat -d -v time")
-                val input = process.inputStream.bufferedReader()
-                val logcatContent = input.readText()
-                
-                // Write to file
-                PrintWriter(FileOutputStream(logcatFile)).use { writer ->
-                    writer.println("=== FULL LOGCAT CAPTURE ===")
-                    writer.println("Timestamp: $timestamp")
-                    writer.println("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-                    writer.println("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
-                    writer.println("=".repeat(60))
-                    writer.println()
-                    writer.write(logcatContent)
-                }
-                
-                // Clear logcat buffer untuk elak duplicate entries next time
-                Runtime.getRuntime().exec("logcat -c")
-                
-                return logcatFile.absolutePath
-            } catch (e: Exception) {
-                android.util.Log.e("CB_DEBUG", "Logcat capture failed: ${e.message}")
                 return ""
             }
         }
@@ -292,6 +254,154 @@ class AppMonitorVPNService : VpnService() {
         }
     }
 
+    // ==================== SOLUTION #1: FIXED PACKET PARSING ====================
+    private fun handleOutboundPacket(packet: ByteArray) {
+        try {
+            if (packet.size < 20) {
+                debugLogger.log("PACKET_PARSE", "Packet too small: ${packet.size} bytes")
+                return
+            }
+            
+            val version = (packet[0].toInt() and 0xF0) shr 4
+            if (version != 4) {
+                debugLogger.log("PACKET_PARSE", "Non-IPv4 packet (version=$version), ignoring")
+                return
+            }
+            
+            val ihl = (packet[0].toInt() and 0x0F) * 4
+            if (ihl < 20 || ihl > packet.size) {
+                debugLogger.log("PACKET_PARSE", "Invalid IP header length: $ihl")
+                return
+            }
+            
+            val totalLength = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
+            if (totalLength < ihl) {
+                debugLogger.log("PACKET_PARSE", "Invalid total length: $totalLength")
+                return
+            }
+            
+            val protocol = packet[9].toInt() and 0xFF
+            
+            // ==================== SOLUTION #3: UDP HANDLING ====================
+            if (protocol == 17) { // UDP
+                handleUdpPacket(packet)
+                return  // Stop processing, jangan proceed ke TCP
+            }
+            
+            if (protocol != 6) { // Bukan TCP
+                debugLogger.log("PACKET_PARSE", "Non-TCP packet (protocol=$protocol), ignoring")
+                return
+            }
+            // ==================== END UDP HANDLING ====================
+            
+            val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
+            
+            // Check TCP header exists
+            if (packet.size < ihl + 20) {
+                debugLogger.log("PACKET_PARSE", "Packet too short for TCP header")
+                return
+            }
+            
+            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
+            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
+            
+            // Calculate TCP header length properly
+            val dataOffset = (packet[ihl + 12].toInt() and 0xF0) shr 4
+            val tcpHeaderLength = dataOffset * 4
+            
+            if (tcpHeaderLength < 20 || tcpHeaderLength > 60) {
+                debugLogger.log("PACKET_PARSE", "Invalid TCP header length: $tcpHeaderLength")
+                return
+            }
+            
+            val payloadStart = ihl + tcpHeaderLength
+            val payload = if (payloadStart < packet.size && payloadStart < totalLength) {
+                val payloadEnd = minOf(packet.size, totalLength)
+                packet.copyOfRange(payloadStart, payloadEnd)
+            } else {
+                ByteArray(0)
+            }
+            
+            // DEBUG: Log TCP flags untuk tahu packet type
+            val tcpFlags = packet[ihl + 13].toInt() and 0xFF
+            val flagStr = buildString {
+                if ((tcpFlags and 0x02) != 0) append("SYN ")
+                if ((tcpFlags and 0x10) != 0) append("ACK ")
+                if ((tcpFlags and 0x08) != 0) append("PSH ")
+                if ((tcpFlags and 0x01) != 0) append("FIN ")
+                if ((tcpFlags and 0x04) != 0) append("RST ")
+            }.trim()
+            
+            debugLogger.log("PACKET_PARSE", "$destIp:$destPort <- 10.0.0.2:$srcPort [$flagStr], Payload: ${payload.size} bytes")
+            
+            // Only process packets with actual data or PUSH flag
+            if (payload.isNotEmpty() || (tcpFlags and 0x08) != 0) { // PSH flag
+                val priority = EndpointConfig.getPriorityForHost(destIp)
+                val domainType = when (priority) {
+                    3 -> "CRITICAL"
+                    2 -> "IMPORTANT"
+                    1 -> "BACKGROUND"
+                    else -> "UNKNOWN"
+                }
+                debugLogger.log("ENDPOINT_CHECK", "$destIp classified as $domainType (priority=$priority)")
+                
+                priorityManager.addPacket(payload, destIp, destPort, srcPort)
+                debugLogger.log("QUEUE", "Added to priority queue. Queue size: ${priorityManager.queueSize()}")
+            } else {
+                debugLogger.log("PACKET_PARSE", "Skipping control packet [$flagStr] with no data")
+            }
+            
+        } catch (e: Exception) {
+            debugLogger.log("PACKET_PARSE_ERROR", "Error parsing packet (size=${packet.size}): ${e.message}")
+            // Dump first few bytes for debugging
+            val dumpSize = minOf(32, packet.size)
+            val hexDump = packet.take(dumpSize).joinToString(" ") { "%02x".format(it) }
+            debugLogger.log("PACKET_DUMP", "First $dumpSize bytes: $hexDump")
+        }
+    }
+
+    // ==================== SOLUTION #3: UDP PACKET HANDLING ====================
+    private fun handleUdpPacket(packet: ByteArray) {
+        try {
+            val ihl = (packet[0].toInt() and 0x0F) * 4
+            if (packet.size < ihl + 8) {
+                debugLogger.log("UDP_PARSE", "Packet too short for UDP header")
+                return
+            }
+            
+            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
+            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
+            
+            val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
+            
+            // Log semua UDP traffic untuk debug
+            debugLogger.log("UDP", "$destIp:$destPort <- 10.0.0.2:$srcPort, Size: ${packet.size} bytes")
+            
+            // Khusus untuk DNS (port 53)
+            if (destPort == 53 || srcPort == 53) {
+                debugLogger.log("DNS", "DNS packet detected: $destIp:$destPort")
+                // Note: DNS forwarding di-comment untuk sekarang
+                // forwardDnsQuery(packet, ihl)
+            }
+            
+        } catch (e: Exception) {
+            debugLogger.log("UDP_ERROR", "Error parsing UDP: ${e.message}")
+        }
+    }
+
+    /* NOTE: DNS forwarding di-comment untuk elak complexity
+    private fun forwardDnsQuery(packet: ByteArray, udpHeaderStart: Int) {
+        Thread {
+            try {
+                // Implementation akan ditambah kemudian
+                debugLogger.log("DNS_FORWARD", "DNS forwarding would happen here")
+            } catch (e: Exception) {
+                debugLogger.log("DNS_FORWARD_ERROR", "Failed: ${e.message}")
+            }
+        }.start()
+    }
+    */
+
     private fun startPacketProcessor() {
         workerPool.execute {
             debugLogger.log("PACKET_PROCESSOR", "Packet processor thread started")
@@ -410,101 +520,6 @@ class AppMonitorVPNService : VpnService() {
         }
     }
 
-    private fun handleOutboundPacket(packet: ByteArray) {
-        try {
-            if (packet.size < 20) return
-            
-            val version = (packet[0].toInt() and 0xF0) shr 4
-            if (version != 4) return
-            
-            val ihl = (packet[0].toInt() and 0x0F) * 4
-            if (ihl < 20 || ihl > packet.size) return
-            
-            val totalLength = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
-            if (totalLength < ihl) return
-            
-            val protocol = packet[9].toInt() and 0xFF
-            if (protocol != 6) return // TCP only
-            
-            val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
-            
-            // FIX: Proper TCP header length calculation
-            if (packet.size < ihl + 20) return // Need at least TCP header
-            
-            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
-            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
-            
-            // TCP Data Offset (header length in 32-bit words)
-            val dataOffset = (packet[ihl + 12].toInt() and 0xF0) shr 4
-            val tcpHeaderLength = dataOffset * 4
-            
-            if (tcpHeaderLength < 20 || tcpHeaderLength > 60) {
-                debugLogger.log("PACKET_PARSE", "Invalid TCP header length: $tcpHeaderLength")
-                return
-            }
-            
-            val payloadStart = ihl + tcpHeaderLength
-            val payload = if (payloadStart < packet.size && payloadStart < totalLength) {
-                val payloadEnd = minOf(packet.size, totalLength)
-                packet.copyOfRange(payloadStart, payloadEnd)
-            } else {
-                ByteArray(0)
-            }
-            
-            // DEBUG: Log TCP flags untuk tahu packet type
-            val tcpFlags = packet[ihl + 13].toInt() and 0xFF
-            val flagStr = when {
-                (tcpFlags and 0x02) != 0 -> "SYN"
-                (tcpFlags and 0x10) != 0 -> "ACK"
-                (tcpFlags and 0x01) != 0 -> "FIN"
-                (tcpFlags and 0x04) != 0 -> "RST"
-                else -> "DATA"
-            }
-            
-            debugLogger.log("PACKET_PARSE", "$destIp:$destPort <- 10.0.0.2:$srcPort ($flagStr), TCP HL: $tcpHeaderLength, Payload: ${payload.size} bytes")
-            
-            // Only process packets with actual data (not just SYN/ACK)
-            if (payload.isNotEmpty() || (tcpFlags and 0x08) != 0) { // PSH flag
-                val priority = EndpointConfig.getPriorityForHost(destIp)
-                priorityManager.addPacket(payload, destIp, destPort, srcPort)
-                debugLogger.log("QUEUE", "Added to queue (priority=$priority). Size: ${priorityManager.queueSize()}")
-            } else {
-                debugLogger.log("PACKET_PARSE", "Skipping control packet ($flagStr) with no data")
-            }
-            
-        } catch (e: Exception) {
-            debugLogger.log("PACKET_PARSE_ERROR", "Error: ${e.message}")
-        }
-    }
-
-    private fun handleUdpPacket(packet: ByteArray) {
-        try {
-            val ihl = (packet[0].toInt() and 0x0F) * 4
-            if (packet.size < ihl + 8) return
-            
-            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
-            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
-            
-            // DNS is typically port 53
-            if (destPort == 53 || srcPort == 53) {
-                val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
-                
-                debugLogger.log("DNS", "DNS query to $destIp:$destPort")
-                
-                // Forward DNS through normal socket (bypass VPN)
-                forwardDnsQuery(packet, ihl + 8)
-            }
-        } catch (e: Exception) {
-            debugLogger.log("DNS_ERROR", "Error: ${e.message}")
-        }
-    }
-    
-    // In handleOutboundPacket, add UDP case:
-    if (protocol == 17) { // UDP
-        handleUdpPacket(packet)
-        return
-    }
-
     private fun buildTcpPacket(srcIp: String, srcPort: Int, destIp: String, destPort: Int, payload: ByteArray): ByteArray {
         debugLogger.log("PACKET_BUILD", "Building TCP packet: $srcIp:$srcPort -> $destIp:$destPort, Payload: ${payload.size} bytes")
         
@@ -562,28 +577,15 @@ class AppMonitorVPNService : VpnService() {
         lastPacketTime = 0L
         instance = null
         
-        // CAPTURE FULL LOGCAT sebelum save debug log
-        val logcatPath = debugLogger.captureLogcatToFile(this)
-        if (logcatPath.isNotEmpty()) {
-            debugLogger.log("LOGCAT", "Full system logcat saved to: $logcatPath")
+        // Save debug log to file
+        val logPath = debugLogger.saveToFile(this)
+        if (logPath.isNotEmpty()) {
+            android.util.Log.d("CB_DEBUG", "Debug log saved to: $logPath")
+        } else {
+            android.util.Log.e("CB_DEBUG", "Failed to save debug log")
         }
         
-        // Save our debug log
-        val debugLogPath = debugLogger.saveToFile(this)
-        if (debugLogPath.isNotEmpty()) {
-            debugLogger.log("DEBUG_LOG", "Debug log saved to: $debugLogPath")
-        }
-        
-        // Show Toast notification dengan file locations
-        android.os.Handler(mainLooper).post {
-            val message = if (logcatPath.isNotEmpty() && debugLogPath.isNotEmpty()) {
-                "Logs saved to Downloads:\n1. ${File(logcatPath).name}\n2. ${File(debugLogPath).name}"
-            } else {
-                "Logs saved to Downloads folder"
-            }
-            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
-        }
-        
+        debugLogger.log("SERVICE", "Service destruction complete")
         debugLogger.clear()
         
         super.onDestroy()
