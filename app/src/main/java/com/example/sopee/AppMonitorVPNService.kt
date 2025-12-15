@@ -63,8 +63,11 @@ class AppMonitorVPNService : VpnService() {
         fun saveToFile(context: android.content.Context): String {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val filename = "CedokBooster_Debug_${timestamp}.log"
-            val downloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                ?: File(context.filesDir, "Download")
+            
+            // GUNA FOLDER DOWNLOAD UMUM (sentiasa visible)
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
             
             val logFile = File(downloadsDir, filename)
             try {
@@ -87,6 +90,45 @@ class AppMonitorVPNService : VpnService() {
                 return logFile.absolutePath
             } catch (e: Exception) {
                 android.util.Log.e("CB_DEBUG", "Failed to save log file: ${e.message}")
+                return ""
+            }
+        }
+        
+        // NEW FUNCTION: Capture FULL system logcat
+        fun captureLogcatToFile(context: android.content.Context): String {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val filename = "CedokBooster_FULL_Logcat_${timestamp}.txt"
+            
+            // Save to public Downloads folder
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+            
+            val logcatFile = File(downloadsDir, filename)
+            
+            try {
+                // Run logcat command
+                val process = Runtime.getRuntime().exec("logcat -d -v time")
+                val input = process.inputStream.bufferedReader()
+                val logcatContent = input.readText()
+                
+                // Write to file
+                PrintWriter(FileOutputStream(logcatFile)).use { writer ->
+                    writer.println("=== FULL LOGCAT CAPTURE ===")
+                    writer.println("Timestamp: $timestamp")
+                    writer.println("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+                    writer.println("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
+                    writer.println("=".repeat(60))
+                    writer.println()
+                    writer.write(logcatContent)
+                }
+                
+                // Clear logcat buffer untuk elak duplicate entries next time
+                Runtime.getRuntime().exec("logcat -c")
+                
+                return logcatFile.absolutePath
+            } catch (e: Exception) {
+                android.util.Log.e("CB_DEBUG", "Logcat capture failed: ${e.message}")
                 return ""
             }
         }
@@ -137,7 +179,7 @@ class AppMonitorVPNService : VpnService() {
         // Start cleanup scheduler
         scheduledPool.scheduleAtFixedRate({
             connectionPool.cleanupIdleConnections()
-            debugLogger.log("SCHEDULER", "Cleanup executed - Pool size: ${connectionPool.getPoolSizeForDebug()}")
+            debugLogger.log("SCHEDULER", "Cleanup executed")
         }, 10, 10, TimeUnit.SECONDS)
         
         // Start packet processor
@@ -147,9 +189,6 @@ class AppMonitorVPNService : VpnService() {
         
         return START_STICKY
     }
-
-    // Helper untuk dapatkan pool size (tambah function di ConnectionPool)
-    // ... akan dijelaskan selepas ini
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -327,7 +366,7 @@ class AppMonitorVPNService : VpnService() {
                     debugLogger.log("PACKET_TASK", "No socket available for $destKey, packet dropped")
                 }
                 
-                Thread.sleep(10) // Small delay to prevent CPU spinning
+                Thread.sleep(10)
             }
             debugLogger.log("PACKET_PROCESSOR", "Packet processor thread ended")
         }
@@ -467,24 +506,30 @@ class AppMonitorVPNService : VpnService() {
         lastPacketTime = 0L
         instance = null
         
-        // Save debug log to file
-        val logPath = debugLogger.saveToFile(this)
-        if (logPath.isNotEmpty()) {
-            android.util.Log.d("CB_DEBUG", "Debug log saved to: $logPath")
-        } else {
-            android.util.Log.e("CB_DEBUG", "Failed to save debug log")
+        // CAPTURE FULL LOGCAT sebelum save debug log
+        val logcatPath = debugLogger.captureLogcatToFile(this)
+        if (logcatPath.isNotEmpty()) {
+            debugLogger.log("LOGCAT", "Full system logcat saved to: $logcatPath")
         }
         
-        debugLogger.log("SERVICE", "Service destruction complete")
+        // Save our debug log
+        val debugLogPath = debugLogger.saveToFile(this)
+        if (debugLogPath.isNotEmpty()) {
+            debugLogger.log("DEBUG_LOG", "Debug log saved to: $debugLogPath")
+        }
+        
+        // Show Toast notification dengan file locations
+        android.os.Handler(mainLooper).post {
+            val message = if (logcatPath.isNotEmpty() && debugLogPath.isNotEmpty()) {
+                "Logs saved to Downloads:\n1. ${File(logcatPath).name}\n2. ${File(debugLogPath).name}"
+            } else {
+                "Logs saved to Downloads folder"
+            }
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+        
         debugLogger.clear()
         
         super.onDestroy()
-    }
-    
-    // Helper function for ConnectionPool debugging
-    fun ConnectionPool.getPoolSizeForDebug(): String {
-        // This would need to be added to ConnectionPool.kt
-        // For now, return placeholder
-        return "ConnectionPool stats not available"
     }
 }
