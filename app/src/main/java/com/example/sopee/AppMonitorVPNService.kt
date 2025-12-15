@@ -412,40 +412,82 @@ class AppMonitorVPNService : VpnService() {
 
     private fun handleOutboundPacket(packet: ByteArray) {
         try {
-            val ipHeaderLen = (packet[0].toInt() and 0x0F) * 4
-            if (ipHeaderLen < 20 || packet.size < ipHeaderLen + 20) {
-                debugLogger.log("PACKET_PARSE", "Invalid packet: header too short")
+            if (packet.size < 20) {
+                debugLogger.log("PACKET_PARSE", "Packet too small: ${packet.size} bytes")
                 return
             }
+            
+            val version = (packet[0].toInt() and 0xF0) shr 4
+            if (version != 4) {
+                debugLogger.log("PACKET_PARSE", "Non-IPv4 packet (version=$version), ignoring")
+                return
+            }
+            
+            val ihl = (packet[0].toInt() and 0x0F) * 4
+            if (ihl < 20 || packet.size < ihl) {
+                debugLogger.log("PACKET_PARSE", "Invalid IP header length: $ihl")
+                return
+            }
+            
             val protocol = packet[9].toInt() and 0xFF
-            if (protocol != 6) {
+            if (protocol != 6) { // TCP
                 debugLogger.log("PACKET_PARSE", "Non-TCP packet (protocol=$protocol), ignoring")
                 return
             }
-
+            
             val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
-            val srcPort = ((packet[ipHeaderLen].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 1].toInt() and 0xFF)
-            val destPort = ((packet[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 3].toInt() and 0xFF)
-            val payload = packet.copyOfRange(ipHeaderLen + 20, packet.size)
-
+            
+            // Check TCP header exists
+            if (packet.size < ihl + 20) {
+                debugLogger.log("PACKET_PARSE", "Packet too short for TCP header")
+                return
+            }
+            
+            val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
+            val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
+            
+            // Calculate TCP header length
+            val tcpHeaderLength = ((packet[ihl + 12].toInt() and 0xF0) shr 4) * 4
+            if (packet.size < ihl + tcpHeaderLength) {
+                debugLogger.log("PACKET_PARSE", "Packet too short for TCP data")
+                return
+            }
+            
+            val payloadStart = ihl + tcpHeaderLength
+            val payload = if (payloadStart < packet.size) {
+                packet.copyOfRange(payloadStart, packet.size)
+            } else {
+                ByteArray(0)
+            }
+            
             debugLogger.log("PACKET_PARSE", "Parsed: $destIp:$destPort <- 10.0.0.2:$srcPort, Payload: ${payload.size} bytes")
             
-            // Check if this is a Shopee domain
-            val priority = EndpointConfig.getPriorityForHost(destIp)
+            // TRY DNS RESOLUTION: Jika destIp adalah IP, cuba resolve ke hostname
+            val hostname = try {
+                // Cuba cache DNS lookup atau guna system DNS
+                // Untuk sekarang, kita guna destIp sahaja
+                destIp
+            } catch (e: Exception) {
+                destIp
+            }
+            
+            val priority = EndpointConfig.getPriorityForHost(hostname)
             val domainType = when (priority) {
                 3 -> "CRITICAL"
                 2 -> "IMPORTANT"
                 1 -> "BACKGROUND"
                 else -> "UNKNOWN"
             }
-            debugLogger.log("ENDPOINT_CHECK", "$destIp classified as $domainType (priority=$priority)")
             
-            // Add to priority queue instead of immediate processing
+            debugLogger.log("ENDPOINT_CHECK", "$hostname ($destIp) classified as $domainType (priority=$priority)")
+            
+            // Add to priority queue
             priorityManager.addPacket(payload, destIp, destPort, srcPort)
             debugLogger.log("QUEUE", "Added to priority queue. Queue size: ${priorityManager.queueSize()}")
             
         } catch (e: Exception) {
-            debugLogger.log("PACKET_PARSE_ERROR", "Error parsing packet: ${e.message}")
+            debugLogger.log("PACKET_PARSE_ERROR", "Error parsing packet (size=${packet.size}): ${e.message}")
+            debugLogger.log("PACKET_DUMP", "First 32 bytes: ${packet.take(32).joinToString(" ") { "%02x".format(it) }}")
         }
     }
 
