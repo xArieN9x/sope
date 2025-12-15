@@ -1,0 +1,3 @@
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="#4D4CAF50"/> <!-- 4D = 30% opacity -->
+</shape>
