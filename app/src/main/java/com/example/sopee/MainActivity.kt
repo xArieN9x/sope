@@ -1,4 +1,4 @@
-package com.example.allinoneflushapp
+package com.example.sopee
 
 import android.app.Activity
 import android.content.Intent
@@ -26,7 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDoAllJob: Button
     private lateinit var btnAccessibilityOn: Button
     private lateinit var btnForceCloseAll: Button
-    private val pandaPackage = "com.logistics.rider.foodpanda"
+    private val pandaPackage = "com.shopee.foody.driver.my"
     private val dnsList = listOf("1.1.1.1", "156.154.70.1", "8.8.8.8", "76.76.2.0")
 
     private val vpnPermissionLauncher = registerForActivityResult(
@@ -222,10 +222,10 @@ class MainActivity : AppCompatActivity() {
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                Toast.makeText(this, "Panda launched!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Shopee launched!", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Toast.makeText(this, "Failed to launch Panda", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Failed to launch Shopee", Toast.LENGTH_SHORT).show()
         }
     }
 }
