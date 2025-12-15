@@ -36,7 +36,8 @@
         android:allowBackup="true"
         android:theme="@style/Theme.AppCompat.Light"
         android:usesCleartextTraffic="false"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:requestLegacyExternalStorage="true">
 
         <!-- Main UI -->
         <activity
