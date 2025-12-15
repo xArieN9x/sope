@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CedokBooster</string>
+    <string name="accessibility_service_description">Accessibility Service for Rider Booster Automation</string>
+    <string name="vpn_permission_title">Allow VPN</string>
+</resources>
