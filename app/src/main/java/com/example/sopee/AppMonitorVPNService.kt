@@ -412,82 +412,68 @@ class AppMonitorVPNService : VpnService() {
 
     private fun handleOutboundPacket(packet: ByteArray) {
         try {
-            if (packet.size < 20) {
-                debugLogger.log("PACKET_PARSE", "Packet too small: ${packet.size} bytes")
-                return
-            }
+            if (packet.size < 20) return
             
             val version = (packet[0].toInt() and 0xF0) shr 4
-            if (version != 4) {
-                debugLogger.log("PACKET_PARSE", "Non-IPv4 packet (version=$version), ignoring")
-                return
-            }
+            if (version != 4) return
             
             val ihl = (packet[0].toInt() and 0x0F) * 4
-            if (ihl < 20 || packet.size < ihl) {
-                debugLogger.log("PACKET_PARSE", "Invalid IP header length: $ihl")
-                return
-            }
+            if (ihl < 20 || ihl > packet.size) return
+            
+            val totalLength = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
+            if (totalLength < ihl) return
             
             val protocol = packet[9].toInt() and 0xFF
-            if (protocol != 6) { // TCP
-                debugLogger.log("PACKET_PARSE", "Non-TCP packet (protocol=$protocol), ignoring")
-                return
-            }
+            if (protocol != 6) return // TCP only
             
             val destIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
             
-            // Check TCP header exists
-            if (packet.size < ihl + 20) {
-                debugLogger.log("PACKET_PARSE", "Packet too short for TCP header")
-                return
-            }
+            // FIX: Proper TCP header length calculation
+            if (packet.size < ihl + 20) return // Need at least TCP header
             
             val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
             val destPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
             
-            // Calculate TCP header length
-            val tcpHeaderLength = ((packet[ihl + 12].toInt() and 0xF0) shr 4) * 4
-            if (packet.size < ihl + tcpHeaderLength) {
-                debugLogger.log("PACKET_PARSE", "Packet too short for TCP data")
+            // TCP Data Offset (header length in 32-bit words)
+            val dataOffset = (packet[ihl + 12].toInt() and 0xF0) shr 4
+            val tcpHeaderLength = dataOffset * 4
+            
+            if (tcpHeaderLength < 20 || tcpHeaderLength > 60) {
+                debugLogger.log("PACKET_PARSE", "Invalid TCP header length: $tcpHeaderLength")
                 return
             }
             
             val payloadStart = ihl + tcpHeaderLength
-            val payload = if (payloadStart < packet.size) {
-                packet.copyOfRange(payloadStart, packet.size)
+            val payload = if (payloadStart < packet.size && payloadStart < totalLength) {
+                val payloadEnd = minOf(packet.size, totalLength)
+                packet.copyOfRange(payloadStart, payloadEnd)
             } else {
                 ByteArray(0)
             }
             
-            debugLogger.log("PACKET_PARSE", "Parsed: $destIp:$destPort <- 10.0.0.2:$srcPort, Payload: ${payload.size} bytes")
-            
-            // TRY DNS RESOLUTION: Jika destIp adalah IP, cuba resolve ke hostname
-            val hostname = try {
-                // Cuba cache DNS lookup atau guna system DNS
-                // Untuk sekarang, kita guna destIp sahaja
-                destIp
-            } catch (e: Exception) {
-                destIp
+            // DEBUG: Log TCP flags untuk tahu packet type
+            val tcpFlags = packet[ihl + 13].toInt() and 0xFF
+            val flagStr = when {
+                (tcpFlags and 0x02) != 0 -> "SYN"
+                (tcpFlags and 0x10) != 0 -> "ACK"
+                (tcpFlags and 0x01) != 0 -> "FIN"
+                (tcpFlags and 0x04) != 0 -> "RST"
+                else -> "DATA"
             }
             
-            val priority = EndpointConfig.getPriorityForHost(hostname)
-            val domainType = when (priority) {
-                3 -> "CRITICAL"
-                2 -> "IMPORTANT"
-                1 -> "BACKGROUND"
-                else -> "UNKNOWN"
+            debugLogger.log("PACKET_PARSE", "$destIp:$destPort <- 10.0.0.2:$srcPort ($flagStr), TCP HL: $tcpHeaderLength, Payload: ${payload.size} bytes")
+            
+            // Only process packets with actual data (not just SYN/ACK)
+            if (payload.isNotEmpty() || (tcpFlags and 0x08) != 0) { // PSH flag
+                val priority = EndpointConfig.getPriorityForHost(destIp)
+                priorityManager.addPacket(payload, destIp, destPort, srcPort)
+                debugLogger.log("QUEUE", "Added to queue (priority=$priority). Size: ${priorityManager.queueSize()}")
+            } else {
+                debugLogger.log("PACKET_PARSE", "Skipping control packet ($flagStr) with no data")
             }
-            
-            debugLogger.log("ENDPOINT_CHECK", "$hostname ($destIp) classified as $domainType (priority=$priority)")
-            
-            // Add to priority queue
-            priorityManager.addPacket(payload, destIp, destPort, srcPort)
-            debugLogger.log("QUEUE", "Added to priority queue. Queue size: ${priorityManager.queueSize()}")
             
         } catch (e: Exception) {
-            debugLogger.log("PACKET_PARSE_ERROR", "Error parsing packet (size=${packet.size}): ${e.message}")
-            debugLogger.log("PACKET_DUMP", "First 32 bytes: ${packet.take(32).joinToString(" ") { "%02x".format(it) }}")
+            debugLogger.log("PACKET_PARSE_ERROR", "Error: ${e.message}")
         }
     }
 
