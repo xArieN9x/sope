@@ -1,4 +1,4 @@
-package com.example.allinoneflushapp
+package com.example.sopee
 
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
