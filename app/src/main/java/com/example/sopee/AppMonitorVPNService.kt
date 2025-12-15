@@ -230,10 +230,12 @@ class AppMonitorVPNService : VpnService() {
             
             while (forwardingActive) {
                 try {
-                    val fd = vpnInterface?.fileDescriptor ?: {
+                    val fd = vpnInterface?.fileDescriptor
+                    if (fd == null) {
                         debugLogger.log("PACKET_FORWARD", "VPN file descriptor is null, stopping")
                         break
-                    }()
+                    }
+                    
                     val len = FileInputStream(fd).read(buffer)
                     if (len > 0) {
                         pandaActive = true
@@ -256,15 +258,20 @@ class AppMonitorVPNService : VpnService() {
             debugLogger.log("PACKET_PROCESSOR", "Packet processor thread started")
             
             while (forwardingActive) {
-                try {
-                    val task = priorityManager.takePacket() ?: {
-                        Thread.sleep(10)
-                        continue
-                    }()
-                    
-                    val destKey = "${task.destIp}:${task.destPort}"
-                    debugLogger.log("PACKET_TASK", "Processing task: $destKey, Priority: ${task.priority}, SrcPort: ${task.srcPort}, Size: ${task.packet.size} bytes")
-                    
+                val task = try {
+                    priorityManager.takePacket()
+                } catch (e: InterruptedException) {
+                    null
+                }
+                
+                if (task == null) {
+                    Thread.sleep(10)
+                    continue
+                }
+               
+                val destKey = "${task.destIp}:${task.destPort}"
+                debugLogger.log("PACKET_TASK", "Processing task: $destKey, Priority: ${task.priority}, SrcPort: ${task.srcPort}, Size: ${task.packet.size} bytes")
+
                     // Try to get existing socket from pool
                     var socket = connectionPool.getSocket(task.destIp, task.destPort)
                     
