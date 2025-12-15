@@ -1,4 +1,4 @@
-package com.example.allinoneflushapp
+package com.example.sopee
 
 import android.app.Service
 import android.app.Notification
