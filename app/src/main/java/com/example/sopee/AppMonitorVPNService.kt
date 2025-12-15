@@ -108,7 +108,7 @@ class AppMonitorVPNService : VpnService() {
         builder.setSession("ShopeeMonitor")
             .addAddress("10.0.0.2", 32)
             .addRoute("0.0.0.0", 0)
-            .addAllowedApplication("com.logistics.rider.foodpanda")
+            .addAllowedApplication("com.shopee.foody.driver.my")
             .addDnsServer(dns)
 
         vpnInterface = try {
@@ -119,7 +119,7 @@ class AppMonitorVPNService : VpnService() {
 
         try {
             val status = if (vpnInterface != null) " (DNS: $dns)" else " - Failed"
-            startForeground(NOTIF_ID, createNotification("Panda Monitor$status", connected = vpnInterface != null))
+            startForeground(NOTIF_ID, createNotification("Shopee Monitor$status", connected = vpnInterface != null))
         } catch (_: Exception) {}
 
         if (vpnInterface != null) {
