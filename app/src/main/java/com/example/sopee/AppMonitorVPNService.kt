@@ -524,36 +524,137 @@ class AppMonitorVPNService : VpnService() {
     private fun buildTcpPacket(srcIp: String, srcPort: Int, destIp: String, destPort: Int, payload: ByteArray): ByteArray {
         debugLogger.log("PACKET_BUILD", "Building TCP packet: $srcIp:$srcPort -> $destIp:$destPort, Payload: ${payload.size} bytes")
         
-        // (Keep existing implementation, Tuan)
         val totalLen = 40 + payload.size
         val packet = ByteArray(totalLen)
-        packet[0] = 0x45
+        
+        // IPv4 Header
+        packet[0] = 0x45.toByte()  // Version + IHL
+        packet[1] = 0x00           // DSCP + ECN
         packet[2] = (totalLen ushr 8).toByte()
         packet[3] = (totalLen and 0xFF).toByte()
-        packet[8] = 0xFF.toByte()
-        packet[9] = 0x06
-        val src = srcIp.split(".")
-        packet[12] = src[0].toUByte().toByte()
-        packet[13] = src[1].toUByte().toByte()
-        packet[14] = src[2].toUByte().toByte()
-        packet[15] = src[3].toUByte().toByte()
-        val dest = destIp.split(".")
-        packet[16] = dest[0].toUByte().toByte()
-        packet[17] = dest[1].toUByte().toByte()
-        packet[18] = dest[2].toUByte().toByte()
-        packet[19] = dest[3].toUByte().toByte()
+        packet[4] = 0x00           // Identification
+        packet[5] = 0x00
+        packet[6] = 0x40           // Flags + Fragment Offset (Don't Fragment)
+        packet[7] = 0x00
+        packet[8] = 0x40.toByte()  // TTL = 64
+        packet[9] = 0x06           // Protocol = TCP
+        
+        // IP Checksum (akan dikira kemudian)
+        packet[10] = 0x00
+        packet[11] = 0x00
+        
+        // Source IP
+        val srcParts = srcIp.split(".")
+        packet[12] = srcParts[0].toInt().toByte()
+        packet[13] = srcParts[1].toInt().toByte()
+        packet[14] = srcParts[2].toInt().toByte()
+        packet[15] = srcParts[3].toInt().toByte()
+        
+        // Destination IP
+        val destParts = destIp.split(".")
+        packet[16] = destParts[0].toInt().toByte()
+        packet[17] = destParts[1].toInt().toByte()
+        packet[18] = destParts[2].toInt().toByte()
+        packet[19] = destParts[3].toInt().toByte()
+        
+        // TCP Header
         packet[20] = (srcPort ushr 8).toByte()
         packet[21] = (srcPort and 0xFF).toByte()
         packet[22] = (destPort ushr 8).toByte()
         packet[23] = (destPort and 0xFF).toByte()
-        packet[32] = 0x50
-        packet[33] = if (payload.isEmpty()) 0x02 else 0x18.toByte()
+        
+        // Sequence Number (random untuk setiap packet)
+        val seqNum = (Math.random() * Int.MAX_VALUE).toInt()
+        packet[24] = (seqNum ushr 24).toByte()
+        packet[25] = (seqNum ushr 16).toByte()
+        packet[26] = (seqNum ushr 8).toByte()
+        packet[27] = (seqNum and 0xFF).toByte()
+        
+        // Acknowledgment Number (0 untuk packet pertama)
+        packet[28] = 0x00
+        packet[29] = 0x00
+        packet[30] = 0x00
+        packet[31] = 0x00
+        
+        // Data Offset + Reserved + Flags
+        packet[32] = 0x50           // Data Offset = 5 (20 bytes), Reserved = 0
+        
+        // TCP Flags: SYN untuk connection initiation, PSH+ACK untuk data
+        val flags = if (payload.isEmpty()) 0x02 else 0x18  // SYN atau PSH+ACK
+        packet[33] = flags.toByte()
+        
+        // Window Size (65535)
         packet[34] = 0xFF.toByte()
         packet[35] = 0xFF.toByte()
+        
+        // TCP Checksum (akan dikira)
+        packet[36] = 0x00
+        packet[37] = 0x00
+        
+        // Urgent Pointer
+        packet[38] = 0x00
+        packet[39] = 0x00
+        
+        // Payload
         System.arraycopy(payload, 0, packet, 40, payload.size)
         
-        debugLogger.log("PACKET_BUILD", "Packet built: ${packet.size} bytes total")
+        // Calculate IP checksum
+        calculateIpChecksum(packet)
+        
+        // Calculate TCP checksum (simplified untuk test dulu)
+        calculateSimpleTcpChecksum(packet)
+        
+        debugLogger.log("PACKET_BUILD", "Packet built: ${packet.size} bytes total, Flags: 0x${flags.toString(16)}, Seq: $seqNum")
         return packet
+    }
+
+    // ==================== FUNGSI BARU 1 ====================
+    private fun calculateIpChecksum(packet: ByteArray) {
+        var sum = 0
+        
+        // Calculate sum for first 20 bytes (IP header)
+        for (i in 0 until 20 step 2) {
+            if (i != 10) { // Skip checksum field itself
+                sum += ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
+            }
+        }
+        
+        // Fold 32-bit sum to 16-bit
+        while (sum ushr 16 != 0) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        
+        val checksum = sum.inv() and 0xFFFF
+        
+        // Store checksum in big-endian
+        packet[10] = (checksum ushr 8).toByte()
+        packet[11] = (checksum and 0xFF).toByte()
+    }
+    
+    // ==================== FUNGSI BARU 2 ====================
+    private fun calculateSimpleTcpChecksum(packet: ByteArray) {
+        // Simplified TCP checksum (untuk test dulu)
+        // Dalam implementasi sebenar, kena include pseudo-header
+        
+        var sum = 0
+        
+        // TCP header (bytes 20-39)
+        for (i in 20 until 40 step 2) {
+            if (i != 36) { // Skip TCP checksum field
+                sum += ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
+            }
+        }
+        
+        // Fold 32-bit sum to 16-bit
+        while (sum ushr 16 != 0) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        
+        val checksum = sum.inv() and 0xFFFF
+        
+        // Store TCP checksum
+        packet[36] = (checksum ushr 8).toByte()
+        packet[37] = (checksum and 0xFF).toByte()
     }
 
     override fun onDestroy() {
