@@ -453,7 +453,6 @@ class AppMonitorVPNService : VpnService() {
                 }
                 
                 if (socket != null) {
-                if (socket != null) {
                     // Track active connection
                     tcpConnections[task.srcPort] = socket
                     
