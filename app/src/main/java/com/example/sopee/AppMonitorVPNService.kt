@@ -494,38 +494,55 @@ class AppMonitorVPNService : VpnService() {
 
     private fun startResponseHandler(srcPort: Int, socket: Socket, destIp: String, destPort: Int) {
         workerPool.execute {
-            debugLogger.log("RESPONSE_HANDLER", "Response handler started for srcPort $srcPort -> $destIp:$destPort")
+            debugLogger.log("RESPONSE_HANDLER", "🚀 Handler STARTED for srcPort $srcPort -> $destIp:$destPort")
+            
             val outStream = FileOutputStream(vpnInterface!!.fileDescriptor)
             val inStream = socket.getInputStream()
             val buffer = ByteArray(2048)
             
             try {
+                // ✅ TAMBAH: Send SYN-ACK simulation dulu
+                debugLogger.log("RESPONSE_HANDLER", "Simulating SYN-ACK for initial handshake")
+                val synAckPayload = ByteArray(0)  // Empty untuk SYN-ACK
+                val synAckPacket = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, synAckPayload)
+                
+                // ✅ UBAH: TCP flags untuk SYN-ACK (0x12 = SYN+ACK)
+                synAckPacket[33] = 0x12.toByte()  // SYN+ACK flags
+                
+                outStream.write(synAckPacket)
+                outStream.flush()
+                debugLogger.log("RESPONSE_TX", "✅ Sent SYN-ACK to app for srcPort $srcPort")
+                
+                // Kemudian baca response dari server
+                socket.soTimeout = 10000
+                
                 while (forwardingActive && socket.isConnected && !socket.isClosed) {
                     val n = inStream.read(buffer)
                     if (n <= 0) {
-                        debugLogger.log("RESPONSE_HANDLER", "No more data from srcPort $srcPort, ending")
+                        debugLogger.log("RESPONSE_HANDLER", "No more data from srcPort $srcPort")
                         break
                     }
                     
-                    debugLogger.log("RESPONSE_RX", "Received $n bytes response from $destIp:$destPort for srcPort $srcPort")
+                    debugLogger.log("RESPONSE_RX", "✅ RECEIVED $n bytes from server")
                     val reply = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, buffer.copyOfRange(0, n))
                     outStream.write(reply)
                     outStream.flush()
-                    debugLogger.log("RESPONSE_TX", "Forwarded $n bytes response back to app")
+                    debugLogger.log("RESPONSE_TX", "✅ Forwarded $n bytes to app")
                 }
+            } catch (e: java.net.SocketTimeoutException) {
+                debugLogger.log("RESPONSE_HANDLER", "⏰ Timeout waiting for server (no data received)")
             } catch (e: Exception) {
-                debugLogger.log("RESPONSE_HANDLER_ERROR", "Error in response handler for srcPort $srcPort: ${e.message}")
+                debugLogger.log("RESPONSE_HANDLER_ERROR", "❌ Error: ${e.message}")
             } finally {
-                // Return socket to pool if still usable
                 if (socket.isConnected && !socket.isClosed) {
-                    debugLogger.log("SOCKET_POOL", "Returning socket for $destIp:$destPort to pool")
+                    debugLogger.log("SOCKET_POOL", "Returning socket to pool")
                     connectionPool.returnSocket(destIp, destPort, socket)
                 } else {
-                    debugLogger.log("SOCKET_POOL", "Socket for $destIp:$destPort is closed, not returning to pool")
                     socket.close()
+                    debugLogger.log("SOCKET_POOL", "Socket closed")
                 }
                 tcpConnections.remove(srcPort)
-                debugLogger.log("RESPONSE_HANDLER", "Response handler ended for srcPort $srcPort")
+                debugLogger.log("RESPONSE_HANDLER", "Handler ENDED for srcPort $srcPort")
             }
         }
     }
