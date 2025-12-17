@@ -453,8 +453,14 @@ class AppMonitorVPNService : VpnService() {
                 }
                 
                 if (socket != null) {
-                    // Track active connection
-                    tcpConnections[task.srcPort] = socket
+                    // ✅ FIX: Check jika response handler sudah start SEBELUM add ke map
+                    val handlerAlreadyStarted = tcpConnections.containsKey(task.srcPort)
+                    
+                    // Track active connection (hanya jika handler belum start)
+                    if (!handlerAlreadyStarted) {
+                        tcpConnections[task.srcPort] = socket
+                        debugLogger.log("TCP_CONNECTION", "Tracked socket for srcPort ${task.srcPort}")
+                    }
                     
                     // Send data
                     try {
@@ -463,20 +469,18 @@ class AppMonitorVPNService : VpnService() {
                         socket.getOutputStream().flush()
                         debugLogger.log("SOCKET_SEND", "Successfully sent data to $destKey")
                         
-                        // ✅ FIX: TAMBAH DEBUG LOG INI
-                        debugLogger.log("RESPONSE_HANDLER_CHECK", "Checking srcPort ${task.srcPort}, in map? ${tcpConnections.containsKey(task.srcPort)}")
-                        
                         // Start response handler if not already
-                        if (!tcpConnections.containsKey(task.srcPort)) {
+                        if (!handlerAlreadyStarted) {
                             debugLogger.log("RESPONSE_HANDLER", "🚀 STARTING response handler for srcPort ${task.srcPort}")
                             startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
                         } else {
-                            debugLogger.log("RESPONSE_HANDLER", "⚠️ Handler already exists for srcPort ${task.srcPort}, skipping")
+                            debugLogger.log("RESPONSE_HANDLER", "✅ Handler already exists for srcPort ${task.srcPort}, data sent")
                         }
                     } catch (e: Exception) {
                         debugLogger.log("SOCKET_SEND_ERROR", "Error sending to $destKey: ${e.message}")
                         socket.close()
                         tcpConnections.remove(task.srcPort)
+                        debugLogger.log("TCP_CONNECTION", "Removed socket for srcPort ${task.srcPort} due to error")
                     }
                 } else {
                     debugLogger.log("PACKET_TASK", "No socket available for $destKey, packet dropped")
