@@ -453,6 +453,7 @@ class AppMonitorVPNService : VpnService() {
                 }
                 
                 if (socket != null) {
+                if (socket != null) {
                     // Track active connection
                     tcpConnections[task.srcPort] = socket
                     
@@ -463,10 +464,15 @@ class AppMonitorVPNService : VpnService() {
                         socket.getOutputStream().flush()
                         debugLogger.log("SOCKET_SEND", "Successfully sent data to $destKey")
                         
+                        // ✅ FIX: TAMBAH DEBUG LOG INI
+                        debugLogger.log("RESPONSE_HANDLER_CHECK", "Checking srcPort ${task.srcPort}, in map? ${tcpConnections.containsKey(task.srcPort)}")
+                        
                         // Start response handler if not already
                         if (!tcpConnections.containsKey(task.srcPort)) {
-                            debugLogger.log("RESPONSE_HANDLER", "Starting response handler for srcPort ${task.srcPort}")
+                            debugLogger.log("RESPONSE_HANDLER", "🚀 STARTING response handler for srcPort ${task.srcPort}")
                             startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
+                        } else {
+                            debugLogger.log("RESPONSE_HANDLER", "⚠️ Handler already exists for srcPort ${task.srcPort}, skipping")
                         }
                     } catch (e: Exception) {
                         debugLogger.log("SOCKET_SEND_ERROR", "Error sending to $destKey: ${e.message}")
