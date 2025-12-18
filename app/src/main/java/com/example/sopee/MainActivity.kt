@@ -123,7 +123,7 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             startActivity(intent)
-            Toast.makeText(this, "Enable 'CB Accessibility Engine'", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Enable 'CBS Accessibility Engine'", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Cannot open settings", Toast.LENGTH_SHORT).show()
         }
