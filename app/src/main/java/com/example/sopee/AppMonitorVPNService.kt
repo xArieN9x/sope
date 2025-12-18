@@ -368,63 +368,60 @@ class AppMonitorVPNService : VpnService() {
 
     private fun startPacketProcessor() {
         workerPool.execute {
-            debugLogger.log("PACKET_PROCESSOR", "Packet processor thread started")
+            debugLogger.log("PACKET_PROCESSOR", "Packet processor thread started - TEST MODE")
+            
+            // ⚠️ TEST: Bypass queue system
+            val testPackets = mutableListOf<PacketTask>()
             
             while (forwardingActive) {
+                // Try get from queue
                 val task = priorityManager.takePacket()
                 
-                if (task == null) {
-                    Thread.sleep(10)
-                    continue
-                }
-                
-                val destKey = "${task.destIp}:${task.destPort}"
-                debugLogger.log("PACKET_TASK", "Processing: $destKey, Priority: ${task.priority}, SrcPort: ${task.srcPort}, Size: ${task.packet.size}")
-                
-                var socket = connectionPool.getSocket(task.destIp, task.destPort)
-                
-                if (socket == null) {
-                    debugLogger.log("SOCKET", "No pooled socket for $destKey, creating new")
-                    socket = try {
-                        Socket(task.destIp, task.destPort).apply {
-                            tcpNoDelay = true
-                            soTimeout = 30000
-                        }
-                    } catch (e: Exception) {
-                        debugLogger.log("SOCKET_ERROR", "Failed connect to $destKey: ${e.message}")
-                        null
-                    }
+                if (task != null) {
+                    testPackets.add(task)
+                    debugLogger.log("QUEUE_TEST", "✅ Got packet from queue: ${task.destIp}:${task.destPort}")
+                    
+                    // Process immediately
+                    processPacketTask(task)
                 } else {
-                    debugLogger.log("SOCKET", "Reusing pooled socket for $destKey")
-                }
-                
-                if (socket != null) {
-                    try {
-                        debugLogger.log("SOCKET_SEND", "Sending ${task.packet.size} bytes to $destKey")
-                        socket.getOutputStream().write(task.packet)
-                        socket.getOutputStream().flush()
-                        debugLogger.log("SOCKET_SEND", "Successfully sent to $destKey")
-                        
-                        // ==================== FIXED: START HANDLER SIMPLE ====================
-                        if (!tcpConnections.containsKey(task.srcPort)) {
-                            debugLogger.log("RESPONSE_HANDLER", "🚀 STARTING handler for srcPort ${task.srcPort}")
-                            startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
-                        } else {
-                            debugLogger.log("RESPONSE_HANDLER", "✅ Handler already exists for srcPort ${task.srcPort}")
-                        }
-                        
-                    } catch (e: Exception) {
-                        debugLogger.log("SOCKET_SEND_ERROR", "Error: ${e.message}")
-                        try { socket.close() } catch (_: Exception) { }
-                        tcpConnections.remove(task.srcPort)
+                    // If no packet, process test packets
+                    if (testPackets.isNotEmpty()) {
+                        val testTask = testPackets.removeAt(0)
+                        debugLogger.log("QUEUE_TEST", "🔧 Processing test packet: ${testTask.destIp}:${testTask.destPort}")
+                        processPacketTask(testTask)
                     }
-                } else {
-                    debugLogger.log("PACKET_TASK", "No socket for $destKey, packet dropped")
                 }
                 
-                Thread.sleep(10)
+                Thread.sleep(50)
             }
-            debugLogger.log("PACKET_PROCESSOR", "Packet processor thread ended")
+        }
+    }
+    
+    // ⚠️ TAMBAH function baru
+    private fun processPacketTask(task: PacketTask) {
+        val destKey = "${task.destIp}:${task.destPort}"
+        debugLogger.log("PROCESS_TASK", "🚀 Processing: $destKey, SrcPort: ${task.srcPort}")
+        
+        try {
+            // Direct socket connection (bypass pool)
+            debugLogger.log("SOCKET_DIRECT", "Connecting to $destKey")
+            val socket = Socket(task.destIp, task.destPort).apply {
+                tcpNoDelay = true
+                soTimeout = 30000
+            }
+            
+            debugLogger.log("SOCKET_DIRECT", "✅ Connected to $destKey")
+            
+            // Send data
+            socket.getOutputStream().write(task.packet)
+            socket.getOutputStream().flush()
+            debugLogger.log("SOCKET_SEND", "✅ Data sent to $destKey")
+            
+            // Start handler
+            startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
+            
+        } catch (e: Exception) {
+            debugLogger.log("PROCESS_ERROR", "❌ Error: ${e.message}")
         }
     }
 
