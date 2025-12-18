@@ -1,32 +1,28 @@
 package com.example.sopee
 
 import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.TimeUnit 
+import java.util.concurrent.TimeUnit  // TAMBAH INI!
 
 data class PacketTask(
     val packet: ByteArray,
     val destIp: String,
     val destPort: Int,
     val srcPort: Int,
-    val priority: Int, // 3=CRITICAL, 2=IMPORTANT, 1=BACKGROUND, 0=UNKNOWN
+    val priority: Int,
     val timestamp: Long = System.currentTimeMillis()
 ) : Comparable<PacketTask> {
     override fun compareTo(other: PacketTask): Int {
-        // Higher priority first, then older packets first
-        return if (this.priority != other.priority) {
-            other.priority - this.priority // Higher priority should come out first
-        } else {
-            (this.timestamp - other.timestamp).toInt() // Older packets first if same priority
+        if (this.priority != other.priority) {
+            return other.priority - this.priority
         }
+        return (this.timestamp - other.timestamp).toInt()
     }
 
-    // Optional: Override equals & hashCode untuk data class dengan ByteArray
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
 
         other as PacketTask
-
         if (!packet.contentEquals(other.packet)) return false
         if (destIp != other.destIp) return false
         if (destPort != other.destPort) return false
@@ -54,16 +50,16 @@ class TrafficPriorityManager {
     fun addPacket(packet: ByteArray, destIp: String, destPort: Int, srcPort: Int) {
         val priority = EndpointConfig.getPriorityForHost(destIp)
         
-        // TAMBAH LOG UNTUK DEBUG
-        android.util.Log.d("CB_DEBUG", "TRAFFIC_QUEUE: Add packet to $destIp:$destPort, priority=$priority, queue=${packetQueue.size}")
+        // Debug log
+        android.util.Log.d("CB_DEBUG", "QUEUE_ADD: $destIp:$destPort -> priority=$priority, size=${packetQueue.size + 1}")
         
         packetQueue.put(PacketTask(packet, destIp, destPort, srcPort, priority))
     }
     
     fun takePacket(): PacketTask? {
         return try {
-            // ⚠️ PERBAIKI: Ganti take() dengan poll(timeout)
-            packetQueue.poll(50, TimeUnit.MILLISECONDS)  // Timeout 50ms
+            // Use poll with timeout instead of take()
+            packetQueue.poll(50, TimeUnit.MILLISECONDS)
         } catch (e: InterruptedException) {
             null
         }
