@@ -72,10 +72,13 @@ class ConnectionPool {
                 while (iterator.hasNext()) {
                     val pooled = iterator.next()
                     
-                    // GUNA FUNGSI BARU DARI EndpointConfig
-                    val keepAlive = EndpointConfig.getKeepAliveForHost(key)
+                    // ⚠️ PERBAIKI: Extract host sahaja dari key (contoh: "143.92.88.1:443" -> "143.92.88.1")
+                    val host = key.substringBefore(":")
+                    val keepAlive = EndpointConfig.getKeepAliveForHost(host)
                     
-                    if (now - pooled.lastUsed > keepAlive || pooled.socket.isClosed) {
+                    // ⚠️ PERBAIKI: Type comparison (Long vs Long)
+                    val idleTime = now - pooled.lastUsed
+                    if (idleTime > keepAlive || pooled.socket.isClosed) {
                         try {
                             pooled.socket.close()
                         } catch (_: Exception) { }
