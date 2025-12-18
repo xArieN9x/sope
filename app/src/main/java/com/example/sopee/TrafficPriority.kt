@@ -1,6 +1,7 @@
 package com.example.sopee
 
 import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.TimeUnit 
 
 data class PacketTask(
     val packet: ByteArray,
@@ -51,15 +52,18 @@ class TrafficPriorityManager {
     private val packetQueue = PriorityBlockingQueue<PacketTask>()
     
     fun addPacket(packet: ByteArray, destIp: String, destPort: Int, srcPort: Int) {
-        // GUNA FUNGSI BARU DARI EndpointConfig
         val priority = EndpointConfig.getPriorityForHost(destIp)
+        
+        // TAMBAH LOG UNTUK DEBUG
+        android.util.Log.d("CB_DEBUG", "TRAFFIC_QUEUE: Add packet to $destIp:$destPort, priority=$priority, queue=${packetQueue.size}")
         
         packetQueue.put(PacketTask(packet, destIp, destPort, srcPort, priority))
     }
     
     fun takePacket(): PacketTask? {
         return try {
-            packetQueue.take()
+            // ⚠️ PERBAIKI: Ganti take() dengan poll(timeout)
+            packetQueue.poll(50, TimeUnit.MILLISECONDS)  // Timeout 50ms
         } catch (e: InterruptedException) {
             null
         }
