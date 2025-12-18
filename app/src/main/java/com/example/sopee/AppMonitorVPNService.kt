@@ -608,6 +608,9 @@ class AppMonitorVPNService : VpnService() {
         // TCP Flags: SYN untuk connection initiation, PSH+ACK untuk data
         val flags = if (payload.isEmpty()) 0x02 else 0x18  // SYN atau PSH+ACK
         packet[33] = flags.toByte()
+       
+        // ✅ TAMBAH LOG INI
+        debugLogger.log("TCP_FLAGS", "Packet flags: 0x${flags.toString(16)} (${if (flags == 0x02) "SYN" else if (flags == 0x12) "SYN+ACK" else if (flags == 0x10) "ACK" else "DATA"})")
         
         // Window Size (65535)
         packet[34] = 0xFF.toByte()
