@@ -1,24 +1,18 @@
 workflows:
-  android-simple:
-    name: Android Simple Build
+  android-release:
+    name: Android Release Workflow
     max_build_duration: 60
     environment:
-      java: 11  # ⚠️ PASTI Java 11
-
+      java: 17
     scripts:
-      - name: Build Debug APK
+      - name: Build Debug APK using Gradle CLI
         script: |
-          # Guna gradlew (wrapper) bukan gradle
-          ./gradlew clean assembleDebug
-          
-          # Verify APK exists
-          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            echo "✅ APK created successfully!"
-          else
-            echo "❌ APK not found!"
-            ls -la app/build/outputs/apk/debug/
-            exit 1
-          fi
+          # Guna gradle CLI terus (sedia ada di Codemagic)
+          gradle clean assembleDebug
+
+      - name: Verify APK
+        script: |
+          ls -la app/build/outputs/apk/debug/
 
     artifacts:
-      - app/build/outputs/apk/debug/*.apk
+      - app/build/outputs/**/*.apk
