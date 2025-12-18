@@ -1,34 +1,30 @@
 package com.example.sopee
 
 object EndpointConfig {
-
+    // 1. ENDPOINT CRITICAL (Priority 3)
     val CRITICAL_ENDPOINTS = setOf(
-        "food-driver.shopee.com.my",          // Server utama live order & logistik
-        "foody.shopee.com.my",                // Server live operations (suspected)
-        "remote-config.gslb.sgw.shopeemobile.com" // Konfigurasi real-time app
+        "food-driver.shopee.com.my",
+        "foody.shopee.com.my",
+        "remote-config.gslb.sgw.shopeemobile.com"
     )
 
+    // 2. ENDPOINT IMPORTANT (Priority 2)
     val IMPORTANT_ENDPOINTS = setOf(
-        "ubt.tracking.shopee.com.my",         // User behavior tracking
-        "apm.tracking.shopee.com.my",         // Application performance monitoring
-        "patronus.idata.shopeemobile.com",    // Data/analytics service
-        "food-metric.shopee.com.my"           // Telemetry & metrics order (suspected untuk order masuk)
+        "ubt.tracking.shopee.com.my",
+        "apm.tracking.shopee.com.my",
+        "patronus.idata.shopeemobile.com",
+        "food-metric.shopee.com.my"
     )
 
+    // 3. ENDPOINT BACKGROUND (Priority 1)
     val BACKGROUND_ENDPOINTS = setOf(
-        "graph.facebook.com",                 // Social login/sharing (Facebook SDK)
-        "98dbdw-launches.appsflyersdk.com",   // Marketing & install analytics (AppsFlyer)
+        "graph.facebook.com",
+        "98dbdw-launches.appsflyersdk.com",
         "mall.shopee.my",
         "shopee.com.my"
     )
 
-    const val CRITICAL_KEEP_ALIVE_MS = 120000L    // 2 minit - untuk connection critical
-    const val IMPORTANT_KEEP_ALIVE_MS = 60000L    // 1 minit  - untuk connection penting
-    const val BACKGROUND_KEEP_ALIVE_MS = 30000L   // 30 saat - untuk background traffic
-    const val MAX_CONNECTIONS_PER_ENDPOINT = 3
-
-object EndpointConfig {
-
+    // IP-to-Priority Mapping (TAMBAH INI!)
     private val ipPriorityMap = mapOf(
         // Shopee Foody Driver Malaysia IPs
         "143.92.88.1" to 3,
@@ -52,31 +48,41 @@ object EndpointConfig {
         // DNS Servers
         "8.8.8.8" to 1,
         "8.8.4.4" to 1,
-        "156.154.70.1" to 1  // DNS server dari log Tuan
+        "156.154.70.1" to 1
     )
 
+    // Connection timing
+    const val CRITICAL_KEEP_ALIVE_MS = 120000L
+    const val IMPORTANT_KEEP_ALIVE_MS = 60000L
+    const val BACKGROUND_KEEP_ALIVE_MS = 30000L
+    const val MAX_CONNECTIONS_PER_ENDPOINT = 3
+
+    /**
+     * Get priority for host/IP
+     */
     fun getPriorityForHost(host: String): Int {
+        // Check IP mapping first
         if (host.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+"))) {
-            val priority = ipPriorityMap[host]
-            if (priority != null) {
-                return priority
-            }
+            return ipPriorityMap[host] ?: 1  // Default 1 untuk IP unknown
         }
         
+        // Check domain
         return when {
             CRITICAL_ENDPOINTS.any { host.endsWith(it) } -> 3
             IMPORTANT_ENDPOINTS.any { host.endsWith(it) } -> 2
             BACKGROUND_ENDPOINTS.any { host.endsWith(it) } -> 1
-            else -> 1  // ⚠️ UBAH: Default priority 1 (bukan 0!)
+            else -> 1  // Default priority 1
         }
     }
 
+    /**
+     * Get keep-alive time for host
+     */
     fun getKeepAliveForHost(host: String): Long {
-        return when {
-            CRITICAL_ENDPOINTS.any { host.endsWith(it) } -> CRITICAL_KEEP_ALIVE_MS
-            IMPORTANT_ENDPOINTS.any { host.endsWith(it) } -> IMPORTANT_KEEP_ALIVE_MS
-            BACKGROUND_ENDPOINTS.any { host.endsWith(it) } -> BACKGROUND_KEEP_ALIVE_MS
-            else -> 30000L // Default 30 saat untuk traffic unknown
+        return when (getPriorityForHost(host)) {
+            3 -> CRITICAL_KEEP_ALIVE_MS
+            2 -> IMPORTANT_KEEP_ALIVE_MS
+            else -> BACKGROUND_KEEP_ALIVE_MS
         }
     }
 }
