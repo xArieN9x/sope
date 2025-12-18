@@ -1,18 +1,63 @@
 workflows:
-  android-release:
-    name: Android Release Workflow
-    max_build_duration: 60
+  android-debug:
+    name: Android Debug Build
+    max_build_duration: 120  # Tambah masa untuk compile Kotlin
     environment:
-      java: 17
-    scripts:
-      - name: Build Debug APK using Gradle CLI
-        script: |
-          # Guna gradle CLI terus (sedia ada di Codemagic)
-          gradle clean assembleDebug
+      groups:
+        - keystore_credentials  # Jika ada signing
+      vars:
+        PACKAGE_NAME: "com.example.sopee"  # Tambah variable
+      android_signing:
+        - debug  # Debug signing auto
+      java: 11  # ⚠️ UBAH: Java 11 untuk Android (bukan 17)
 
-      - name: Verify APK
+    triggers:
+      push:
+        branches:
+          - main
+          - master
+          - develop
+
+    scripts:
+      - name: Set up Android SDK
         script: |
-          ls -la app/build/outputs/apk/debug/
+          echo "Setting up Android SDK..."
+          sudo sdkmanager "platforms;android-34"
+          sudo sdkmanager "build-tools;34.0.0"
+          sudo sdkmanager "platform-tools"
+
+      - name: Build Debug APK
+        script: |
+          echo "Building Debug APK..."
+          chmod +x gradlew  # ⚠️ PASTIKAN gradlew executable
+          ./gradlew clean assembleDebug --stacktrace --info
+          
+          # Check jika build berjaya
+          if [ $? -eq 0 ]; then
+            echo "✅ Build successful!"
+            echo "APK location:"
+            find app/build/outputs -name "*.apk" -type f
+          else
+            echo "❌ Build failed!"
+            exit 1
+          fi
+
+      - name: List APK files
+        script: |
+          echo "Generated APK files:"
+          ls -la app/build/outputs/apk/debug/*.apk
+          echo "APK size:"
+          du -h app/build/outputs/apk/debug/*.apk
 
     artifacts:
-      - app/build/outputs/**/*.apk
+      - app/build/outputs/apk/**/*.apk
+      - app/build/reports/**/*.html  # Include build reports
+      - app/build/outputs/logs/**/*.log
+
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com  # Ganti dengan email Tuan
+        notify:
+          success: true
+          failure: true
