@@ -496,68 +496,43 @@ class AppMonitorVPNService : VpnService() {
 
     private fun startResponseHandler(srcPort: Int, socket: Socket, destIp: String, destPort: Int) {
         workerPool.execute {
-            // ✅ GUARD: Check jika handler sudah ada SEBELUM proceed
-            synchronized(tcpConnections) {
-                if (tcpConnections.containsKey(srcPort)) {
-                    debugLogger.log("RESPONSE_HANDLER", "⚠️ Handler already running for srcPort $srcPort, skipping")
-                    return@execute
-                }
-                tcpConnections[srcPort] = socket
-            }
-            
+            // ⚠️ PERBAIKI: JANGAN GUARD CHECK, LANGSUNG START
             debugLogger.log("RESPONSE_HANDLER", "🚀 Handler STARTED for srcPort $srcPort -> $destIp:$destPort")
             
             val outStream = FileOutputStream(vpnInterface!!.fileDescriptor)
             val inStream = socket.getInputStream()
-            val buffer = ByteArray(2048)
             
             try {
-                // 1. Send SYN-ACK simulation
-                debugLogger.log("RESPONSE_HANDLER", "Simulating SYN-ACK for initial handshake")
-                val synAckPayload = ByteArray(0)
-                val synAckPacket = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, synAckPayload)
+                // 1. PASTI HANTAR SYN-ACK
+                debugLogger.log("SYNACK", "🚀 HANTAR SYN-ACK ke app")
+                val synAckPacket = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, ByteArray(0))
                 synAckPacket[33] = 0x12.toByte()  // SYN+ACK flags
                 
                 outStream.write(synAckPacket)
                 outStream.flush()
-                debugLogger.log("RESPONSE_TX", "✅ Sent SYN-ACK to app for srcPort $srcPort")
+                debugLogger.log("SYNACK", "✅ SYN-ACK DIHANTAR untuk port $srcPort")
                 
-                // 2. Wait for ACK from app (timeout pendek)
-                Thread.sleep(100) // Beri masa app hantar ACK
+                // 2. SIMPLE SOCKET TRACKING
+                tcpConnections[srcPort] = socket
                 
-                // 3. Teruskan dengan baca data dari server
-                socket.soTimeout = 15000  // Timeout panjang sikit
+                // 3. BACA DATA DARI SERVER
+                socket.soTimeout = 15000  // 15 seconds
+                val buffer = ByteArray(2048)
                 
-                while (forwardingActive && socket.isConnected && !socket.isClosed) {
+                while (forwardingActive) {
                     val n = inStream.read(buffer)
-                    if (n <= 0) {
-                        debugLogger.log("RESPONSE_HANDLER", "No more data from srcPort $srcPort")
-                        break
-                    }
+                    if (n <= 0) break
                     
-                    debugLogger.log("RESPONSE_RX", "✅ RECEIVED $n bytes from server")
+                    debugLogger.log("RESPONSE_RX", "✅ DAPAT $n bytes dari server")
                     val reply = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, buffer.copyOfRange(0, n))
                     outStream.write(reply)
                     outStream.flush()
-                    debugLogger.log("RESPONSE_TX", "✅ Forwarded $n bytes to app")
                 }
-            } catch (e: java.net.SocketTimeoutException) {
-                debugLogger.log("RESPONSE_HANDLER", "⏰ Timeout waiting for server (no data received)")
             } catch (e: Exception) {
-                debugLogger.log("RESPONSE_HANDLER_ERROR", "❌ Error: ${e.message}")
+                debugLogger.log("RESPONSE_ERROR", "❌ ${e.message}")
             } finally {
-                synchronized(tcpConnections) {
-                    tcpConnections.remove(srcPort)
-                }
-                
-                if (socket.isConnected && !socket.isClosed) {
-                    debugLogger.log("SOCKET_POOL", "Returning socket to pool")
-                    connectionPool.returnSocket(destIp, destPort, socket)
-                } else {
-                    socket.close()
-                    debugLogger.log("SOCKET_POOL", "Socket closed")
-                }
-                debugLogger.log("RESPONSE_HANDLER", "Handler ENDED for srcPort $srcPort")
+                tcpConnections.remove(srcPort)
+                debugLogger.log("RESPONSE_HANDLER", "Handler ENDED untuk srcPort $srcPort")
             }
         }
     }
