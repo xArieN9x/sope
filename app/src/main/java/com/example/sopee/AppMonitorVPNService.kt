@@ -470,11 +470,13 @@ class AppMonitorVPNService : VpnService() {
                         debugLogger.log("SOCKET_SEND", "Successfully sent data to $destKey")
                         
                         // Start response handler if not already
-                        if (!handlerAlreadyStarted) {
-                            debugLogger.log("RESPONSE_HANDLER", "🚀 STARTING response handler for srcPort ${task.srcPort}")
-                            startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
-                        } else {
-                            debugLogger.log("RESPONSE_HANDLER", "✅ Handler already exists for srcPort ${task.srcPort}, data sent")
+                        synchronized(tcpConnections) {
+                            if (!tcpConnections.containsKey(task.srcPort)) {
+                                debugLogger.log("RESPONSE_HANDLER", "🚀 STARTING response handler for srcPort ${task.srcPort}")
+                                startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
+                            } else {
+                                debugLogger.log("RESPONSE_HANDLER", "✅ Handler already exists for srcPort ${task.srcPort}, data sent")
+                            }
                         }
                     } catch (e: Exception) {
                         debugLogger.log("SOCKET_SEND_ERROR", "Error sending to $destKey: ${e.message}")
@@ -494,6 +496,15 @@ class AppMonitorVPNService : VpnService() {
 
     private fun startResponseHandler(srcPort: Int, socket: Socket, destIp: String, destPort: Int) {
         workerPool.execute {
+            // ✅ GUARD: Check jika handler sudah ada SEBELUM proceed
+            synchronized(tcpConnections) {
+                if (tcpConnections.containsKey(srcPort)) {
+                    debugLogger.log("RESPONSE_HANDLER", "⚠️ Handler already running for srcPort $srcPort, skipping")
+                    return@execute
+                }
+                tcpConnections[srcPort] = socket
+            }
+            
             debugLogger.log("RESPONSE_HANDLER", "🚀 Handler STARTED for srcPort $srcPort -> $destIp:$destPort")
             
             val outStream = FileOutputStream(vpnInterface!!.fileDescriptor)
@@ -501,20 +512,21 @@ class AppMonitorVPNService : VpnService() {
             val buffer = ByteArray(2048)
             
             try {
-                // ✅ TAMBAH: Send SYN-ACK simulation dulu
+                // 1. Send SYN-ACK simulation
                 debugLogger.log("RESPONSE_HANDLER", "Simulating SYN-ACK for initial handshake")
-                val synAckPayload = ByteArray(0)  // Empty untuk SYN-ACK
+                val synAckPayload = ByteArray(0)
                 val synAckPacket = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, synAckPayload)
-                
-                // ✅ UBAH: TCP flags untuk SYN-ACK (0x12 = SYN+ACK)
                 synAckPacket[33] = 0x12.toByte()  // SYN+ACK flags
                 
                 outStream.write(synAckPacket)
                 outStream.flush()
                 debugLogger.log("RESPONSE_TX", "✅ Sent SYN-ACK to app for srcPort $srcPort")
                 
-                // Kemudian baca response dari server
-                socket.soTimeout = 10000
+                // 2. Wait for ACK from app (timeout pendek)
+                Thread.sleep(100) // Beri masa app hantar ACK
+                
+                // 3. Teruskan dengan baca data dari server
+                socket.soTimeout = 15000  // Timeout panjang sikit
                 
                 while (forwardingActive && socket.isConnected && !socket.isClosed) {
                     val n = inStream.read(buffer)
@@ -534,6 +546,10 @@ class AppMonitorVPNService : VpnService() {
             } catch (e: Exception) {
                 debugLogger.log("RESPONSE_HANDLER_ERROR", "❌ Error: ${e.message}")
             } finally {
+                synchronized(tcpConnections) {
+                    tcpConnections.remove(srcPort)
+                }
+                
                 if (socket.isConnected && !socket.isClosed) {
                     debugLogger.log("SOCKET_POOL", "Returning socket to pool")
                     connectionPool.returnSocket(destIp, destPort, socket)
@@ -541,7 +557,6 @@ class AppMonitorVPNService : VpnService() {
                     socket.close()
                     debugLogger.log("SOCKET_POOL", "Socket closed")
                 }
-                tcpConnections.remove(srcPort)
                 debugLogger.log("RESPONSE_HANDLER", "Handler ENDED for srcPort $srcPort")
             }
         }
