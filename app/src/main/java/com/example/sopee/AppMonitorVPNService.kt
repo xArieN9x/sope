@@ -118,15 +118,16 @@ class AppMonitorVPNService : VpnService() {
     private val priorityManager = TrafficPriorityManager()
     private val tcpConnections = ConcurrentHashMap<Int, Socket>()
     
+    // ==================== FIX 1: TRACK SEQUENCE NUMBERS ====================
+    private val receivedSeqNumbers = ConcurrentHashMap<Int, Long>()
+    private var sequenceNumber = 1000000000L  // Start dengan nilai besar
+    
     private val workerPool = Executors.newCachedThreadPool()
     private val scheduledPool: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
     
     private val CHANNEL_ID = "panda_monitor_channel"
     private val NOTIF_ID = 1001
 
-    // ==================== FIXED: SEQUENCE NUMBER TRACKING ====================
-    private var sequenceNumber = 1000000000L  // Start dengan nilai besar
-    
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         instance = this
         debugLogger.log("SERVICE", "AppMonitorVPNService started")
@@ -142,7 +143,8 @@ class AppMonitorVPNService : VpnService() {
         
         scheduledPool.scheduleAtFixedRate({
             connectionPool.cleanupIdleConnections()
-            debugLogger.log("SCHEDULER", "Cleanup executed, tcpConnections: ${tcpConnections.size}")
+            receivedSeqNumbers.entries.removeIf { System.currentTimeMillis() - (it.value ushr 32) > 30000 }
+            debugLogger.log("SCHEDULER", "Cleanup executed, tcpConnections: ${tcpConnections.size}, seqMap: ${receivedSeqNumbers.size}")
         }, 10, 10, TimeUnit.SECONDS)
         
         startPacketProcessor()
@@ -183,6 +185,7 @@ class AppMonitorVPNService : VpnService() {
             connectionPool.closeAll()
             tcpConnections.values.forEach { it.close() }
             tcpConnections.clear()
+            receivedSeqNumbers.clear()
             vpnInterface?.close()
         } catch (e: Exception) {
             debugLogger.log("VPN_ERROR", "Cleanup error: ${e.message}")
@@ -299,6 +302,17 @@ class AppMonitorVPNService : VpnService() {
                 return
             }
             
+            // ==================== FIX 2: CAPTURE SYN SEQUENCE NUMBER ====================
+            val tcpFlags = packet[ihl + 13].toInt() and 0xFF
+            if ((tcpFlags and 0x02) != 0) { // SYN packet
+                val seqNum = ((packet[ihl+4].toInt() and 0xFF) shl 24) or
+                             ((packet[ihl+5].toInt() and 0xFF) shl 16) or
+                             ((packet[ihl+6].toInt() and 0xFF) shl 8) or
+                             (packet[ihl+7].toInt() and 0xFF)
+                receivedSeqNumbers[srcPort] = seqNum.toLong()
+                debugLogger.log("SEQ_TRACK", "✅ Saved SYN seqNum $seqNum for srcPort $srcPort")
+            }
+            
             val payloadStart = ihl + tcpHeaderLength
             val payload = if (payloadStart < packet.size && payloadStart < totalLength) {
                 val payloadEnd = minOf(packet.size, totalLength)
@@ -307,7 +321,6 @@ class AppMonitorVPNService : VpnService() {
                 ByteArray(0)
             }
             
-            val tcpFlags = packet[ihl + 13].toInt() and 0xFF
             val flagStr = buildString {
                 if ((tcpFlags and 0x02) != 0) append("SYN ")
                 if ((tcpFlags and 0x10) != 0) append("ACK ")
@@ -397,7 +410,6 @@ class AppMonitorVPNService : VpnService() {
         }
     }
     
-    // ⚠️ TAMBAH function baru
     private fun processPacketTask(task: PacketTask) {
         val destKey = "${task.destIp}:${task.destPort}"
         debugLogger.log("PROCESS_TASK", "🚀 Processing: $destKey, SrcPort: ${task.srcPort}")
@@ -413,9 +425,11 @@ class AppMonitorVPNService : VpnService() {
             debugLogger.log("SOCKET_DIRECT", "✅ Connected to $destKey")
             
             // Send data
-            socket.getOutputStream().write(task.packet)
-            socket.getOutputStream().flush()
-            debugLogger.log("SOCKET_SEND", "✅ Data sent to $destKey")
+            if (task.packet.isNotEmpty()) {
+                socket.getOutputStream().write(task.packet)
+                socket.getOutputStream().flush()
+                debugLogger.log("SOCKET_SEND", "✅ Data sent to $destKey")
+            }
             
             // Start handler
             startResponseHandler(task.srcPort, socket, task.destIp, task.destPort)
@@ -425,29 +439,116 @@ class AppMonitorVPNService : VpnService() {
         }
     }
 
+    // ==================== FIX 3: PROPER SYN-ACK PACKET BUILDER ====================
+    private fun buildSynAckPacket(srcPort: Int, destIp: String, destPort: Int): ByteArray {
+        val receivedSeq = receivedSeqNumbers[srcPort] ?: sequenceNumber++
+        val synAckSeq = if (receivedSeq != 0L) receivedSeq + 1 else sequenceNumber++
+        
+        debugLogger.log("SYNACK_BUILD", "Building SYN-ACK for srcPort $srcPort, seq=$synAckSeq")
+        
+        // Build base packet
+        val packet = ByteArray(40)  // IP(20) + TCP(20) header sahaja, no payload
+        
+        // IPv4 Header
+        packet[0] = 0x45.toByte()  // Version + IHL
+        packet[1] = 0x00           // DSCP + ECN
+        packet[2] = 0x00           // Total Length (akan dikira)
+        packet[3] = 40             // Total Length = 40 bytes
+        packet[4] = 0x00           // Identification
+        packet[5] = 0x00
+        packet[6] = 0x40           // Flags + Fragment Offset
+        packet[7] = 0x00
+        packet[8] = 0x40.toByte()  // TTL = 64
+        packet[9] = 0x06           // Protocol = TCP
+        
+        // IP Checksum (akan dikira kemudian)
+        packet[10] = 0x00
+        packet[11] = 0x00
+        
+        // Source IP (Server -> VPN)
+        packet[12] = 0x0A          // 10
+        packet[13] = 0x00          // 0
+        packet[14] = 0x00          // 0
+        packet[15] = 0x02          // 2 (10.0.0.2)
+        
+        // Destination IP (VPN -> App)
+        packet[16] = 0x0A          // 10
+        packet[17] = 0x00          // 0
+        packet[18] = 0x00          // 0
+        packet[19] = 0x02          // 2 (10.0.0.2)
+        
+        // TCP Header
+        packet[20] = (destPort ushr 8).toByte()  // Source Port = server port
+        packet[21] = (destPort and 0xFF).toByte()
+        packet[22] = (srcPort ushr 8).toByte()   // Destination Port = app port
+        packet[23] = (srcPort and 0xFF).toByte()
+        
+        // Sequence Number (SYN-ACK)
+        packet[24] = (synAckSeq ushr 24).toByte()
+        packet[25] = (synAckSeq ushr 16).toByte()
+        packet[26] = (synAckSeq ushr 8).toByte()
+        packet[27] = (synAckSeq and 0xFF).toByte()
+        
+        // Acknowledgment Number (App's SEQ + 1)
+        val ackNum = receivedSeq + 1
+        packet[28] = (ackNum ushr 24).toByte()
+        packet[29] = (ackNum ushr 16).toByte()
+        packet[30] = (ackNum ushr 8).toByte()
+        packet[31] = (ackNum and 0xFF).toByte()
+        
+        // Data Offset + Reserved
+        packet[32] = 0x50  // Data Offset = 5 (20 bytes)
+        
+        // TCP Flags = SYN + ACK
+        packet[33] = 0x12.toByte()
+        
+        // Window Size
+        packet[34] = 0xFF.toByte()
+        packet[35] = 0xFF.toByte()
+        
+        // TCP Checksum
+        packet[36] = 0x00
+        packet[37] = 0x00
+        
+        // Urgent Pointer
+        packet[38] = 0x00
+        packet[39] = 0x00
+        
+        // Calculate checksums
+        calculateIpChecksum(packet)
+        calculateTcpChecksum(packet, destIp, "10.0.0.2")
+        
+        debugLogger.log("SYNACK_READY", "✅ SYN-ACK built for srcPort $srcPort, seq=$synAckSeq, ack=$ackNum")
+        return packet
+    }
+
     private fun startResponseHandler(srcPort: Int, socket: Socket, destIp: String, destPort: Int) {
         workerPool.execute {
-            debugLogger.log("RESPONSE_HANDLER", "🚀 Handler STARTED for srcPort $srcPort -> $destIp:$destPort")
+            debugLogger.log("RESPONSE_HANDLER", "🚀 Preparing handler for srcPort $srcPort")
             
             try {
                 val outStream = FileOutputStream(vpnInterface!!.fileDescriptor)
                 
-                // ==================== FIXED: SEND SYN-ACK FIRST ====================
+                // ==================== FIX 4: SEND SYN-ACK FIRST, PROPER FLOW ====================
                 debugLogger.log("SYNACK", "🚀 Sending SYN-ACK to app for srcPort $srcPort")
                 
-                val synAckPacket = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, ByteArray(0))
-                synAckPacket[33] = 0x12.toByte()  // SYN+ACK flags
-                
-                // Verify flags
-                val flags = synAckPacket[33].toInt() and 0xFF
-                debugLogger.log("SYNACK_VERIFY", "SYN-ACK flags: 0x${flags.toString(16)} (${if (flags == 0x12) "SYN+ACK" else "UNKNOWN"})")
-                
+                val synAckPacket = buildSynAckPacket(srcPort, destIp, destPort)
                 outStream.write(synAckPacket)
                 outStream.flush()
-                debugLogger.log("SYNACK", "✅ SYN-ACK sent to app for srcPort $srcPort")
+                
+                // Verify packet
+                val flags = synAckPacket[33].toInt() and 0xFF
+                debugLogger.log("SYNACK_VERIFY", "SYN-ACK flags: 0x${flags.toString(16)} (${if (flags == 0x12) "SYN+ACK ✅" else "UNKNOWN ❌"})")
+                debugLogger.log("SYNACK", "✅ SYN-ACK SENT to app for srcPort $srcPort")
+                
+                // Wait for app to send ACK (short delay)
+                Thread.sleep(150)
                 
                 // Track socket
                 tcpConnections[srcPort] = socket
+                
+                // Start proper handler
+                debugLogger.log("RESPONSE_HANDLER", "✅ Handler ACTIVE for srcPort $srcPort -> $destIp:$destPort")
                 
                 // Read server response
                 val inStream = socket.getInputStream()
@@ -462,8 +563,10 @@ class AppMonitorVPNService : VpnService() {
                     }
                     
                     debugLogger.log("RESPONSE_RX", "✅ RECEIVED $n bytes from server for srcPort $srcPort")
-                    val reply = buildTcpPacket(destIp, destPort, "10.0.0.2", srcPort, buffer.copyOfRange(0, n))
-                    outStream.write(reply)
+                    
+                    // Build TCP packet with data
+                    val dataPacket = buildTcpDataPacket(destIp, destPort, "10.0.0.2", srcPort, buffer.copyOfRange(0, n))
+                    outStream.write(dataPacket)
                     outStream.flush()
                     debugLogger.log("RESPONSE_TX", "✅ Forwarded $n bytes to app")
                 }
@@ -474,6 +577,7 @@ class AppMonitorVPNService : VpnService() {
                 debugLogger.log("RESPONSE_HANDLER_ERROR", "❌ Error: ${e.message}")
             } finally {
                 tcpConnections.remove(srcPort)
+                receivedSeqNumbers.remove(srcPort)
                 
                 if (socket.isConnected && !socket.isClosed) {
                     debugLogger.log("SOCKET_POOL", "Returning socket to pool")
@@ -485,6 +589,11 @@ class AppMonitorVPNService : VpnService() {
                 debugLogger.log("RESPONSE_HANDLER", "Handler ENDED for srcPort $srcPort")
             }
         }
+    }
+
+    // Helper untuk data packet
+    private fun buildTcpDataPacket(srcIp: String, srcPort: Int, destIp: String, destPort: Int, payload: ByteArray): ByteArray {
+        return buildTcpPacket(srcIp, srcPort, destIp, destPort, payload)
     }
 
     private fun buildTcpPacket(srcIp: String, srcPort: Int, destIp: String, destPort: Int, payload: ByteArray): ByteArray {
@@ -527,7 +636,7 @@ class AppMonitorVPNService : VpnService() {
         packet[22] = (destPort ushr 8).toByte()
         packet[23] = (destPort and 0xFF).toByte()
         
-        // ==================== FIXED: SEQUENCE NUMBER INCREMENTAL ====================
+        // Sequence Number
         val seqNum = sequenceNumber++
         packet[24] = (seqNum ushr 24).toByte()
         packet[25] = (seqNum ushr 16).toByte()
@@ -543,12 +652,8 @@ class AppMonitorVPNService : VpnService() {
         // Data Offset + Reserved + Flags
         packet[32] = 0x50  // Data Offset = 5 (20 bytes)
         
-        // TCP Flags
-        val flags = when {
-            payload.isEmpty() && packet[33] != 0x12.toByte() -> 0x02  // SYN
-            payload.isEmpty() && packet[33] == 0x12.toByte() -> 0x12  // SYN-ACK
-            else -> 0x10  // ACK untuk data
-        }
+        // TCP Flags - untuk data packet, pakai ACK atau PSH+ACK
+        val flags = if (payload.isNotEmpty()) 0x18 else 0x10  // PSH+ACK atau ACK
         packet[33] = flags.toByte()
         
         // Window Size
@@ -569,15 +674,6 @@ class AppMonitorVPNService : VpnService() {
         // Calculate checksums
         calculateIpChecksum(packet)
         calculateTcpChecksum(packet, srcIp, destIp)
-        
-        val flagName = when (flags) {
-            0x02 -> "SYN"
-            0x12 -> "SYN-ACK"
-            0x10 -> "ACK"
-            0x18 -> "PSH+ACK"
-            else -> "UNKNOWN"
-        }
-        debugLogger.log("PACKET_BUILD", "Built: $srcIp:$srcPort -> $destIp:$destPort, Flags: $flagName, Seq: $seqNum, Size: ${packet.size}")
         
         return packet
     }
@@ -645,6 +741,7 @@ class AppMonitorVPNService : VpnService() {
         connectionPool.closeAll()
         tcpConnections.values.forEach { it.close() }
         tcpConnections.clear()
+        receivedSeqNumbers.clear()
         
         scheduledPool.shutdownNow()
         workerPool.shutdownNow()
